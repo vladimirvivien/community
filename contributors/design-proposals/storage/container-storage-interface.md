@@ -6,7 +6,7 @@
 
 ***Author:*** Saad Ali ([@saad-ali](https://github.com/saad-ali), saadali@google.com)
 
-*This document was drafted [here](https://docs.google.com/document/d/10GDyPWbFE5tQunKMlTXbcWysUttMFhBFJRX8ntaS_4Y/edit?usp=sharing). 
+*This document was drafted [here](https://docs.google.com/document/d/10GDyPWbFE5tQunKMlTXbcWysUttMFhBFJRX8ntaS_4Y/edit?usp=sharing).*
 
 ## Terminology
 
@@ -41,7 +41,7 @@ The primary motivation for Storage vendors to adopt the interface is a desire to
 
 ### Links
 
-* Container Storage Interface (CSI) Spec
+* [Container Storage Interface (CSI) Spec](https://github.com/container-storage-interface/spec/blob/master/spec.md)
 
 ## Objective
 
@@ -65,7 +65,7 @@ The objective of this document is to document all the requirements for enabling 
 
 To support CSI Compliant Volume plugins, a new in-tree CSI Volume plugin will be introduced in Kubernetes. This new volume plugin will be the mechanism by which Kubernetes users (application developers and cluster admins) interact with external CSI volume drivers.
 
-The mount/unmount calls for the new in-tree CSI volume plugin will directly invoke `NodePublishVolume` and `NodeUnpublishVolume` CSI RPCs through a unix domain socket on the node machine.
+The `SetUp`/`TearDown` calls for the new in-tree CSI volume plugin will directly invoke `NodePublishVolume` and `NodeUnpublishVolume` CSI RPCs through a unix domain socket on the node machine.
 
 Provision/delete and attach/detach must be handled by some external component that monitors the Kubernetes API on behalf of a CSI volume driver and invokes the appropriate CSI RPCs against it.
 
@@ -85,11 +85,11 @@ This document recommends a standard mechanism for deploying an arbitrary contain
 
 Kubelet (responsible for mount and unmount) will communicate with an external “CSI volume driver” running on the same host machine (whether containerized or not) via a Unix Domain Socket.
 
-The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of CSI volume drivers.
+The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of both CSI volume drivers and device plugins independently.
 
 Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes NodeId to CSI driver NodeId. It should then add the CSI driver NodeId as a label to the Kubernetes Node API object. The key of the label should be `csi.volume.kubernetes.io/<CsiDriverName>/nodeID`. This will enable the component that will issue `ControllerPublishVolume` calls to use the label as a mapping from cluster node ID to storage node ID.
 
-The Kubernetes team will provide a helper container that can manage the UDS registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
+The Kubernetes team will provide a helper container that can manage the unix domain socket registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
 
 #### Master to CSI Driver Communication
 
@@ -109,7 +109,7 @@ In short, to dynamically provision a new CSI volume, a cluster admin would creat
 
 To provision a new CSI volume, an end user would create a `PersistentVolumeClaim` object referencing this `StorageClass`. The external provisioner will react to the creation of the PVC and issue the `CreateVolume` call against the CSI volume driver to provision the volume. The `CreateVolume` name will be auto-generated as it is for other dynamically provisioned volumes. The `CreateVolume` capacity will be take from the `PersistentVolumeClaim` object. The `CreateVolume` parameters will be passed through from the `StorageClass` parameters (opaque to Kubernetes). Once the operation completes successfully, the external provisioner creates a `PersistentVolume` object to represent the volume using the information returned in the `CreateVolume` call. The `PersistentVolume` object is bound to the `PersistentVolumeClaim` and available for use.
 
-To delete a CSI volume, an end user would delete the corresponding `PersistentVolumeClaim` object. The external provisioner will react to the deletion of the PVC and issue the `DeleteVolume` call against the CSI volume driver commands to delete the volume. It will then delete the `PersistentVolume` object.
+To delete a CSI volume, an end user would delete the corresponding `PersistentVolumeClaim` object. The external provisioner will react to the deletion of the PVC and based on its reclamation policy it will issue the `DeleteVolume` call against the CSI volume driver commands to delete the volume. It will then delete the `PersistentVolume` object.
 
 ##### Attaching and Detaching
 
@@ -194,7 +194,7 @@ type VolumeAttachmentStatus struct {
   IsAttached bool `json:"isAttached" protobuf:"varint,1,opt,name=isAttached"`
 
   // Upon successful attach, this field is updated with any returned
-  // information that must be passed into subsequent WaitForAttach or 
+  // information that must be passed into subsequent WaitForAttach or
   // mount calls.
   // This field must only be set by the entity completing the attach
   // operation, i.e. the external-attacher.
@@ -220,7 +220,7 @@ type VolumeError struct {
 
   // String capturing the error encountered during Attach operation.
   // This string maybe logged, so it should not contain sensitive
-  // information. 
+  // information.
   // +optional
   Message string `json:",message,omitempty" protobuf:"bytes,2,opt,name=message"`
 }
@@ -247,7 +247,7 @@ type CSIVolumeSource struct {
   VolumeHandle string `json:"volumeHandle" protobuf:"bytes,2,opt,name=volumeHandle"`
 
   // Optional: MountSecretRef is a reference to the secret object containing
-  // sensitive information to pass to the CSI driver during NodePublish. 
+  // sensitive information to pass to the CSI driver during NodePublish.
   // This may be empty if no secret is required. If the secret object contains
   // more than one secret, all secrets are passed.
   // This is a local object reference so only secrets within the same
@@ -256,7 +256,7 @@ type CSIVolumeSource struct {
   MountSecretRef *LocalObjectReference `json:"secretRef,omitempty" protobuf:"bytes,3,opt,name=secretRef"`
 
   // Optional: AttachSecretRef is a reference to the secret object containing
-  // sensitive information to pass to the CSI driver during ControllerPublish. 
+  // sensitive information to pass to the CSI driver during ControllerPublish.
   // This may be empty if no secret is required. If the secret object contains
   // more than one secret, all secrets are passed.
   // +optional
@@ -278,11 +278,11 @@ The in-tree CSI volume plugin will implement the following internal Kubernetes v
 2. `AttachableVolumePlugin`
     * Attach/detach of a volume to a given node.
 
-Notably, `ProvisionableVolumePlugin` and `DeletableVolumePlugin` are not implemented because provisioning and deleting for CSI volumes is handled by an external provisioner. 
+Notably, `ProvisionableVolumePlugin` and `DeletableVolumePlugin` are not implemented because provisioning and deleting for CSI volumes is handled by an external provisioner.
 
 #### Mount and Unmount
 
-The in-tree volume plugin’s mount and unmount methods will trigger the `NodePublishVolume` and `NodeUnpublishVolume` CSI calls via Unix Domain Socket. Kubernetes will generate a unique `target_path` (unique per pod per volume) to pass via `NodePublishVolume` for the CSI plugin to mount the volume. Upon successful completion of the `NodeUnpublishVolume` call (once volume unmount has been verified), Kubernetes will delete the directory.
+The in-tree volume plugin’s SetUp and TearDown methods will trigger the `NodePublishVolume` and `NodeUnpublishVolume` CSI calls via Unix Domain Socket. Kubernetes will generate a unique `target_path` (unique per pod per volume) to pass via `NodePublishVolume` for the CSI plugin to mount the volume. Upon successful completion of the `NodeUnpublishVolume` call (once volume unmount has been verified), Kubernetes will delete the directory.
 
 The Kubernetes volume sub-system does not currently support block volumes (only file), so for alpha, the Kubernetes CSI volume plugin will only support file.
 
@@ -332,14 +332,14 @@ Although, Kubernetes does not dictate the packaging for a CSI volume driver, it 
 To deploy a containerized third-party CSI volume driver, it is recommended that storage vendors:
 
   * Create a “CSI volume driver” container that implements the volume plugin behavior and exposes a gRPC interface via a unix domain socket, as defined in the CSI spec (including Controller, Node, and Identity services).
-  * The Kubernetes team will provide helper containers (external-attacher, external-provisioner, kubelet registration) which will assist the “CSI volume driver” container in interacting with the Kubernetes system.
   * To deploy a CSI plugin, a cluster admin should deploy the following
+  * The Kubernetes team will provide helper containers (external-attacher, external-provisioner, Kubernetes CSI Helper) which will assist the “CSI volume driver” container in interacting with the Kubernetes system.
     * StatefulSet with replica size 1, that should
       * A StatefulSet (unlike a ReplicaSet) will guarantee that no more than 1 instance of the pod will be running at once (so we don’t have to worry about multiple instances of the external-provisioner or external-attacher in the cluster).
       * Contain the following containers
         * The “CSI volume driver” container created by the storage vendor.
         * The external-attacher container provided by the Kubernetes team.
-        * The external-provisioner container provided by the Kubernetes team. 
+        * The external-provisioner container provided by the Kubernetes team.
       * Have the following volumes:
         * `emptyDir` volume
           * Mount inside all containers at `/var/lib/csi/sockets/pluginproxy/`
