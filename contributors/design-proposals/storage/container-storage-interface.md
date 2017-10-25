@@ -125,7 +125,10 @@ Once the following conditions are true, the external-attacher should call `Contr
 4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `csi.volume.kubernetes.io/<CsiDriverName>/nodeID` label corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
 5. The `VolumeAttachment.Metadata.DeletionTimestamp` is not set.
 
-Before starting the `ControllerPublishVolume` operation, the external-attacher should add a finalizer to the `VolumeAttachment` Kubernetes API object so that when the object is deleted, the external-attacher has an opportunity to detach the volume first.
+Before starting the `ControllerPublishVolume` operation, the external-attacher should add these finalizers to these Kubernetes API objects:
+
+* To the `VolumeAttachment` so that when the object is deleted, the external-attacher has an opportunity to detach the volume first. External attacher removes this finalized once the volume is fully detached from the node.
+* To the `PersistentVolume` referenced by `VolumeAttachment` so the the PV cannot be deleted while the volume is attached. External attacher needs information from the PV to perform detach operation. The attacher will remove the finalizer once all `VolumeAttachment` objects that refer to the PV are deleted, i.e. the volume is detached from all nodes.
 
 If the operation completes successfully, the external-attacher will:
 
@@ -180,11 +183,23 @@ type VolumeAttachmentSpec struct {
   // request. This is the name returned by GetPluginName().
   Attacher string `json:"attacher" protobuf:"bytes,1,opt,name=attacher"`
 
-  // VolumeSource indicates the volume to attach.
-  Volume VolumeSource `json:",inline" protobuf:"bytes,2,opt,name=volumeSource"`
+  // Volume represents the volume that should be attached.
+  Volume AttachedVolumeSource `json:",inline" protobuf:"bytes,2,opt,name=volume"`
 
   // NodeName indicates the node that the volume should be attached to.
   NodeName string `json:"nodeName,omitempty" protobuf:"bytes,3,opt,name=nodeName"`
+}
+
+// VolumeAttachmentSource represents a volume that should be attached.
+// Right now only PersistenVolumes can be attached via external attacher,
+// in future we may allow also inline volumes in pods.
+// Exactly one member can be set.
+type AttachedVolumeSource struct {
+    // Name of the persistent volume to attach.
+    // +optional
+    PersistentVolumeName *string `json:"persistentVolumeName,omitempty" protobuf:"bytes,1,opt,name=persistentVolumeName"`
+
+    // Placeholder for *VolumeSource to accommodate inline volumes in pods.
 }
 
 type VolumeAttachmentStatus struct {
