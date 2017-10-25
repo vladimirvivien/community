@@ -234,10 +234,10 @@ The existing Kubernetes volume components (attach/detach controller, PVC/PV cont
 
 #### Proposed API
 
-A new `CSIVolumeSource` object will be added to the Kubernetes API. It will be part of the existing `VolumeSource` and `PersistentVolumeSource` objects. This will enable Kubernetes users to use the new volume just like existing volume via a `PersistentVolume` or as a direct reference in a pod.
+A new `CSIPersistentVolumeSource` object will be added to the Kubernetes API. It will be part of the existing `PersistentVolumeSource` objects and thus can be used only via PersistentVolumes. For now we do not consider allowing CSI volumes directly from Pods without PersistentVolumeClaim.
 
 ```GO
-type CSIVolumeSource struct {
+type CSIPersistentVolumeSource struct {
   // Driver is the name of the driver to use for this volume.
   // Required.
   Driver string `json:"driver" protobuf:"bytes,1,opt,name=driver"`
@@ -250,24 +250,24 @@ type CSIVolumeSource struct {
   // sensitive information to pass to the CSI driver during NodePublish.
   // This may be empty if no secret is required. If the secret object contains
   // more than one secret, all secrets are passed.
-  // This is a local object reference so only secrets within the same
-  // namespace as the pod or PVC referencing this volume can be referenced.
   // +optional
-  MountSecretRef *LocalObjectReference `json:"secretRef,omitempty" protobuf:"bytes,3,opt,name=secretRef"`
+  MountSecretRef *SecretReference `json:"mountSecretRef,omitempty" protobuf:"bytes,3,opt,name=mountSecretRef"`
 
   // Optional: AttachSecretRef is a reference to the secret object containing
   // sensitive information to pass to the CSI driver during ControllerPublish.
   // This may be empty if no secret is required. If the secret object contains
   // more than one secret, all secrets are passed.
   // +optional
-  AttachSecretRef *ObjectReference `json:"secretRef,omitempty" protobuf:"bytes,3,opt,name=secretRef"`
+  AttachSecretRef *SecretReference `json:"attachSecretRef,omitempty" protobuf:"bytes,4,opt,name=attachSecretRef"`
 
   // Optional: The value to pass to ControllerPublishVolumeRequest.
   // Defaults to false (read/write).
   // +optional
-  ReadOnly bool `json:"readOnly,omitempty" protobuf:"varint,4,opt,name=readOnly"`
+  ReadOnly bool `json:"readOnly,omitempty" protobuf:"varint,5,opt,name=readOnly"`
 }
 ```
+
+Note that both attach and mount secrets are in a dedicated namespace where external AttachController and kubelet has access and they should not be visible to regular users. It is expected that either admin or external provisioner create these secrets when creating corresponding PV.
 
 #### Internal Interfaces
 
@@ -285,6 +285,8 @@ Notably, `ProvisionableVolumePlugin` and `DeletableVolumePlugin` are not impleme
 The in-tree volume plugin’s SetUp and TearDown methods will trigger the `NodePublishVolume` and `NodeUnpublishVolume` CSI calls via Unix Domain Socket. Kubernetes will generate a unique `target_path` (unique per pod per volume) to pass via `NodePublishVolume` for the CSI plugin to mount the volume. Upon successful completion of the `NodeUnpublishVolume` call (once volume unmount has been verified), Kubernetes will delete the directory.
 
 The Kubernetes volume sub-system does not currently support block volumes (only file), so for alpha, the Kubernetes CSI volume plugin will only support file.
+
+As part of kubelet work, NodeAuthorizer needs to be updated to allow kubelet accessing MountSecret for internal CSI volume plugin.
 
 #### Attaching and Detaching
 
