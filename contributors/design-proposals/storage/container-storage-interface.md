@@ -87,7 +87,7 @@ Kubelet (responsible for mount and unmount) will communicate with an external �
 
 The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of both CSI volume drivers and device plugins independently.
 
-Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes NodeId to CSI driver NodeId. It should then add the CSI driver NodeId as a label to the Kubernetes Node API object. The key of the label should be `csi.volume.kubernetes.io/<CsiDriverName>/nodeID`. This will enable the component that will issue `ControllerPublishVolume` calls to use the label as a mapping from cluster node ID to storage node ID.
+Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeId. It should then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation should be `nodeid.csi.volume.kubernetes.io/<CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
 
 The Kubernetes team will provide a helper container that can manage the unix domain socket registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
 
@@ -113,7 +113,7 @@ To delete a CSI volume, an end user would delete the corresponding `PersistentVo
 
 ##### Attaching and Detaching
 
-Attach/detach operations must also be handled by an external component (an “attacher”). The attacher watches the Kubernetes API on behalf of the external CSI volume driver for new VolumeAttachment objects (defined below), and triggers the appropriate calls against the CSI volume driver to attach the volume.
+Attach/detach operations must also be handled by an external component (an “attacher”). The attacher watches the Kubernetes API on behalf of the external CSI volume driver for new `VolumeAttachment` objects (defined below), and triggers the appropriate calls against the CSI volume driver to attach the volume. The attacher must watch for `VolumeAttachment` object and mark it as attached even if the underlying CSI driver does not support `ControllerPublishVolume` call, as Kubernetes has no knowledge about it.
 
 More specifically, an external “attacher” must watch the Kubernetes API on behalf of the external CSI volume driver to handle attach/detach requests.
 
@@ -121,8 +121,8 @@ Once the following conditions are true, the external-attacher should call `Contr
 
 1. A new `VolumeAttachment` Kubernetes API objects is created by Kubernetes.
 2. The `VolumeAttachment.Spec.Attacher` value in that object corresponds to the name of the external attacher.
-3. The `VolumeAttachment.Status.IsAttached` value is not yet set to true.
-4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `csi.volume.kubernetes.io/<CsiDriverName>/nodeID` label corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
+3. The `VolumeAttachment.Status.Attached` value is not yet set to true.
+4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `nodeid.csi.volume.kubernetes.io/<CSIDriverName>` annotation corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
 5. The `VolumeAttachment.Metadata.DeletionTimestamp` is not set.
 
 Before starting the `ControllerPublishVolume` operation, the external-attacher should add these finalizers to these Kubernetes API objects:
@@ -132,13 +132,13 @@ Before starting the `ControllerPublishVolume` operation, the external-attacher s
 
 If the operation completes successfully, the external-attacher will:
 
-1. Set `VolumeAttachment.Status.IsAttached` field to true to indicate the volume is attached.
+1. Set `VolumeAttachment.Status.Attached` field to true to indicate the volume is attached.
 2. Update the `VolumeAttachment.Status.AttachmentMetadata` field with the contents of the returned `PublishVolumeInfo`.
 3. Clear the `VolumeAttachment.Status.AttachError` field.
 
 If the operation fails, the external-attacher will:
 
-1. Ensure the `VolumeAttachment.Status.IsAttached` field to still false to indicate the volume is not attached.
+1. Ensure the `VolumeAttachment.Status.Attached` field to still false to indicate the volume is not attached.
 2. Set the `VolumeAttachment.Status.AttachError` field detailing the error.
 3. Create an event against the Kubernetes API associated with the `VolumeAttachment` object to inform users what went wrong.
 
@@ -154,7 +154,7 @@ If the operation completes successfully, the external-attacher will:
 
 If the operation fails, the external-attacher will:
 
-1. Ensure the `VolumeAttachment.Status.IsAttached` field remains true to indicate the volume is not yet detached.
+1. Ensure the `VolumeAttachment.Status.Attached` field remains true to indicate the volume is not yet detached.
 2. Set the `VolumeAttachment.Status.DetachError` field detailing the error.
 3. Create an event against the Kubernetes API associated with the `VolumeAttachment` object to inform users what went wrong.
 
@@ -180,7 +180,7 @@ type VolumeAttachment struct {
 
 
 type VolumeAttachmentSpec struct {
-  // Attacher indicates the name of the volume plugin that MUST handle this
+  // Attacher indicates the name of the volume driver that MUST handle this
   // request. This is the name returned by GetPluginName().
   Attacher string `json:"attacher" protobuf:"bytes,1,opt,name=attacher"`
 
@@ -204,10 +204,10 @@ type AttachedVolumeSource struct {
 }
 
 type VolumeAttachmentStatus struct {
-  // IsAttached indicates the volume is successfully attached.
+  // Attached indicates the volume is successfully attached.
   // This field must only be set by the entity completing the attach
   // operation, i.e. the external-attacher.
-  IsAttached bool `json:"isAttached" protobuf:"varint,1,opt,name=isAttached"`
+  Attached bool `json:"attached" protobuf:"varint,1,opt,name=attached"`
 
   // Upon successful attach, this field is updated with any returned
   // information that must be passed into subsequent WaitForAttach or
@@ -238,7 +238,7 @@ type VolumeError struct {
   // This string maybe logged, so it should not contain sensitive
   // information.
   // +optional
-  Message string `json:",message,omitempty" protobuf:"bytes,2,opt,name=message"`
+  Message string `json:"message,omitempty" protobuf:"bytes,2,opt,name=message"`
 }
 ```
 
@@ -293,14 +293,13 @@ The attach/detach controller,running as part of the kube-controller-manager bina
 When the controller decides to attach a CSI volume, it will call the in-tree CSI volume plugin’s attach method. The in-tree CSI volume plugin’s attach method will do the following:
 
 1. Create a new `VolumeAttachment` object (defined in the “Communication Channels” section) to attach the volume.
-    * The name of the of the `VolumeAttachment` object will be the `<UniqueVolumeName>-<NodeId>`.
-      * `UniqueVolumeName` is `<PluginName>/<VolumeName>`
-        * `VolumeName` is the name/ID uniquely identifying the actual backing device, directory, path for a particular volume.
-        * `PluginName` is `CSI/<DriverName>`
-      * `NodeId` is the ID of the node the volume should be attached to.
+    * The name of the of the `VolumeAttachment` object will be the `pv-<PVName>-<NodeName>`.
+      * `pv-` prefix is used to allow using other scheme(s) for inline volumes in future, with their own prefix.
+      * `PVName` is `PV.name` of the attached PersistentVolume.
+      * `NodeName` is `Node.name` of the node where the volume should be attached to.
     * If a `VolumeAttachment` object with the corresponding name already exists, the in-tree volume plugin will simply begin to poll it as defined below. The object is not modified; only the external-attacher should change the status fields; and the external-attacher is responsible for it’s own retry and error handling logic.
 2. Poll the `VolumeAttachment` object waiting for one of the following conditions:
-    * The `VolumeAttachment.Status.IsAttached` field to become `true`.
+    * The `VolumeAttachment.Status.Attached` field to become `true`.
       * The operation completes successfully.
     * An error to be set in the `VolumeAttachment.Status.AttachError` field.
       * The operation terminates with the specified error.
@@ -308,13 +307,13 @@ When the controller decides to attach a CSI volume, it will call the in-tree CSI
       * The operation terminates with timeout error.
     * The `VolumeAttachment.DeletionTimestamp` is set.
       * The operation terminates with an error indicating a detach operation is in progress.
-      * The `VolumeAttachment.Status.IsAttached` value must not be trusted. The attach/detach controller has to wait until the object is deleted by the external-attacher before creating a new instance of the object.
+      * The `VolumeAttachment.Status.Attached` value must not be trusted. The attach/detach controller has to wait until the object is deleted by the external-attacher before creating a new instance of the object.
 
 When the controller decides to detach a CSI volume, it will call the in-tree CSI volume plugin’s detach method. The in-tree CSI volume plugin’s detach method will do the following:
 
 1. Delete the corresponding `VolumeAttachment` object (defined in the “Communication Channels” section) to indicate the volume should be detached.
 2. Poll the `VolumeAttachment` object waiting for one of the following conditions:
-    * The `VolumeAttachment.Status.IsAttached` field to become false.
+    * The `VolumeAttachment.Status.Attached` field to become false.
       * The operation completes successfully.
     * An error to be set in the `VolumeAttachment.Status.DetachError` field.
       * The operation terminates with the specified error.
@@ -393,7 +392,7 @@ Alternatively, one could simplify deployment by deploying all components (includ
 2. The in-tree volume plugin creates a new `VolumeAttachment` object in the kubernetes API and waits for its status to change to completed or error.
 3. The external-attacher sees the `VolumeAttachment` object and triggers a `ControllerPublish` against the CSI volume driver container to fulfil it (meaning the external-attacher container issues a gRPC call via underlying UNIX domain socket to the CSI driver container).
 4. Upon successful completion of the `ControllerPublish` call the external-attacher updates the status of the `VolumeAttachment` object to indicate the volume is successful attached.
-5. The in-tree volume plugin watching the status of the `VolumeAttachment` object in the kubernetes API, sees the `IsAttached` field set to true indicating the volume is attached, so It updates the attach/detach controller’s internal state to indicate the volume is attached.
+5. The in-tree volume plugin watching the status of the `VolumeAttachment` object in the kubernetes API, sees the `Attached` field set to true indicating the volume is attached, so It updates the attach/detach controller’s internal state to indicate the volume is attached.
 
 #### Detaching Volumes
 
@@ -406,15 +405,15 @@ Alternatively, one could simplify deployment by deploying all components (includ
 #### Mounting Volumes
 
 1. The volume manager component of kubelet notices a new volume, referencing a CSI volume, has been scheduled to the node, so it calls the in-tree CSI volume plugin’s `WaitForAttach` method.
-2. The in-tree volume plugin’s `WaitForAttach` method watches the `IsAttached` field of the `VolumeAttachment` object in the kubernetes API to become `true`, it then returns without error.
+2. The in-tree volume plugin’s `WaitForAttach` method watches the `Attached` field of the `VolumeAttachment` object in the kubernetes API to become `true`, it then returns without error.
 3. Kubelet then calls the in-tree CSI volume plugin’s `MountDevice` method which is a no-op and returns immediately.
 4. Finally kubelet calls the in-tree CSI volume plugin’s mount (setup) method, which causes the in-tree volume plugin to issue a `NodePublishVolume` call via the registered unix domain socket to the local CSI driver.
 5. Upon successful completion of the `NodePublishVolume` call the specified path is mounted into the pod container.
 
 #### Unmounting Volumes
 1. The volume manager component of kubelet, notices a mounted CSI volume, referenced by a pod that has been deleted or terminated, so it calls the in-tree CSI volume plugin’s `UnmountDevice` method which is a no-op and returns immediately.
-2. Next kubelet calls the in-tree CSI volume plugin’s unmount (teardown) method, which causes the in-tree volume plugin to issue a `NodeUnpublishVolume` call via the registered unix domain socket to the local CSI driver.
-3. Upon successful completion of the `NodeUnpublishVolume` call the specified path is mounted into the pod container.
+2. Next kubelet calls the in-tree CSI volume plugin’s unmount (teardown) method, which causes the in-tree volume plugin to issue a `NodeUnpublishVolume` call via the registered unix domain socket to the local CSI driver. If this call fails from any reason, kubelet re-tries the call periodically.
+3. Upon successful completion of the `NodeUnpublishVolume` call the specified path is unmounted from the pod container.
 
 
 ## CSI Credentials
