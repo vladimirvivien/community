@@ -262,28 +262,12 @@ type CSIPersistentVolumeSource struct {
   // plugin’s CreateVolume to refer to the volume on all subsequent calls.
   VolumeHandle string `json:"volumeHandle" protobuf:"bytes,2,opt,name=volumeHandle"`
 
-  // Optional: MountSecretRef is a reference to the secret object containing
-  // sensitive information to pass to the CSI driver during NodePublish.
-  // This may be empty if no secret is required. If the secret object contains
-  // more than one secret, all secrets are passed.
-  // +optional
-  MountSecretRef *SecretReference `json:"mountSecretRef,omitempty" protobuf:"bytes,3,opt,name=mountSecretRef"`
-
-  // Optional: AttachSecretRef is a reference to the secret object containing
-  // sensitive information to pass to the CSI driver during ControllerPublish.
-  // This may be empty if no secret is required. If the secret object contains
-  // more than one secret, all secrets are passed.
-  // +optional
-  AttachSecretRef *SecretReference `json:"attachSecretRef,omitempty" protobuf:"bytes,4,opt,name=attachSecretRef"`
-
   // Optional: The value to pass to ControllerPublishVolumeRequest.
   // Defaults to false (read/write).
   // +optional
   ReadOnly bool `json:"readOnly,omitempty" protobuf:"varint,5,opt,name=readOnly"`
 }
 ```
-
-Note that both attach and mount secrets are in a dedicated namespace where external AttachController and kubelet has access and they should not be visible to regular users. It is expected that either admin or external provisioner create these secrets when creating corresponding PV.
 
 #### Internal Interfaces
 
@@ -301,8 +285,6 @@ Notably, `ProvisionableVolumePlugin` and `DeletableVolumePlugin` are not impleme
 The in-tree volume plugin’s SetUp and TearDown methods will trigger the `NodePublishVolume` and `NodeUnpublishVolume` CSI calls via Unix Domain Socket. Kubernetes will generate a unique `target_path` (unique per pod per volume) to pass via `NodePublishVolume` for the CSI plugin to mount the volume. Upon successful completion of the `NodeUnpublishVolume` call (once volume unmount has been verified), Kubernetes will delete the directory.
 
 The Kubernetes volume sub-system does not currently support block volumes (only file), so for alpha, the Kubernetes CSI volume plugin will only support file.
-
-As part of kubelet work, NodeAuthorizer needs to be updated to allow kubelet accessing MountSecret for internal CSI volume plugin.
 
 #### Attaching and Detaching
 
@@ -433,3 +415,34 @@ Alternatively, one could simplify deployment by deploying all components (includ
 1. The volume manager component of kubelet, notices a mounted CSI volume, referenced by a pod that has been deleted or terminated, so it calls the in-tree CSI volume plugin’s `UnmountDevice` method which is a no-op and returns immediately.
 2. Next kubelet calls the in-tree CSI volume plugin’s unmount (teardown) method, which causes the in-tree volume plugin to issue a `NodeUnpublishVolume` call via the registered unix domain socket to the local CSI driver.
 3. Upon successful completion of the `NodeUnpublishVolume` call the specified path is mounted into the pod container.
+
+
+## CSI Credentials
+
+This part of proposal is not going to be implemented in alpha release.
+
+### End user credentials
+CSI allows specifying *end user credentials* in all operations. Kubernetes does not have facility to configure a Secret per *user*, we usually track objects per *namespace*. Therefore we decided to postpone implementation of these credentials and wait until CSI is clarified.
+
+### Volume specific credentials
+Some storage technologies (e.g. iSCSI with CHAP) require credentials tied to the volume (iSCSI LUN) that must be used during `NodePublish` request. It is expected that these credentials will be provided during dynamic provisioning of the volume, however CSI `CreateVolume` response does not provide any. In case it gets fixed soon external provisioner can save the secrets in a dedicated namespace and make them available to external attacher and internal CSI volume plugin using these `CSIPersistentVolumeSource` fields:
+
+// ...
+```go
+type CSIPersistentVolumeSource struct {
+
+    // Optional: MountSecretRef is a reference to the secret object containing
+    // sensitive information to pass to the CSI driver during NodePublish.
+    // This may be empty if no secret is required. If the secret object contains
+    // more than one secret, all secrets are passed.
+    // +optional
+    MountSecretRef *SecretReference `json:"mountSecretRef,omitempty" protobuf:"bytes,3,opt,name=mountSecretRef"`
+
+    // Optional: AttachSecretRef is a reference to the secret object containing
+    // sensitive information to pass to the CSI driver during ControllerPublish.
+    // This may be empty if no secret is required. If the secret object contains
+    // more than one secret, all secrets are passed.
+    // +optional
+    AttachSecretRef *SecretReference `json:"attachSecretRef,omitempty" protobuf:"bytes,4,opt,name=attachSecretRef"`
+}
+```
