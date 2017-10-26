@@ -174,6 +174,7 @@ type VolumeAttachment struct {
 
   // Most recently observed status of the VolumeAttachment request.
   // This data may not be up to date.
+  // +optional
   Status VolumeAttachmentStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
@@ -219,13 +220,13 @@ type VolumeAttachmentStatus struct {
   // +optional
   // This field must only be set by the entity completing the attach
   // operation, i.e. the external-attacher.
-  AttachError VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
+  AttachError *VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
 
   // Last error encountered during detach operation, if any.
   // +optional
   // This field must only be set by the entity completing the detach
   // operation, i.e. the external-attacher.
-  DetachError VolumeError `json:"detachError,omitempty" protobuf:"bytes,3,opt,name=detachError,casttype=VolumeError"`
+  DetachError *VolumeError `json:"detachError,omitempty" protobuf:"bytes,3,opt,name=detachError,casttype=VolumeError"`
 }
 
 type VolumeError struct {
