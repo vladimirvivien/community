@@ -161,34 +161,41 @@ If the operation fails, the external-attacher will:
 The new API object called `VolumeAttachment` will be defined as follows:
 
 ```GO
-// VolumeAttachment captures the intent to attach or detach the specified
-// volume to/from the specified node.
+
+// VolumeAttachment captures the intent to attach or detach the specified volume
+// to/from the specified node.
 //
 // VolumeAttachment objects are non-namespaced.
 type VolumeAttachment struct {
-  metav1.TypeMeta `json:",inline"`
-  metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	metav1.TypeMeta `json:",inline"`
 
-  // Specification of the desired attach/detach volume behavior.
-  Spec VolumeAttachmentSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
+	// Standard object metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-  // Most recently observed status of the VolumeAttachment request.
-  // This data may not be up to date.
-  // +optional
-  Status VolumeAttachmentStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
+	// Specification of the desired attach/detach volume behavior.
+	// Populated by the Kubernetes system.
+	Spec VolumeAttachmentSpec `json:"spec" protobuf:"bytes,2,opt,name=spec"`
+
+	// Status of the VolumeAttachment request.
+	// Populated by the entity completing the attach or detach
+	// operation, i.e. the external-attacher.
+	// +optional
+	Status VolumeAttachmentStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
-
+// The specification of a VolumeAttachment request.
 type VolumeAttachmentSpec struct {
-  // Attacher indicates the name of the volume driver that MUST handle this
-  // request. This is the name returned by GetPluginName().
-  Attacher string `json:"attacher" protobuf:"bytes,1,opt,name=attacher"`
+	// Attacher indicates the name of the volume driver that MUST handle this
+	// request. This is the name returned by GetPluginName().
+	Attacher string `json:"attacher" protobuf:"bytes,1,opt,name=attacher"`
 
-  // Volume represents the volume that should be attached.
-  Volume AttachedVolumeSource `json:",inline" protobuf:"bytes,2,opt,name=volume"`
+	// AttachedVolumeSource represents the volume that should be attached.
+	AttachedVolumeSource `json:",inline" protobuf:"bytes,2,opt,name=attachedVolumeSource"`
 
-  // NodeName indicates the node that the volume should be attached to.
-  NodeName string `json:"nodeName,omitempty" protobuf:"bytes,3,opt,name=nodeName"`
+	// The node that the volume should be attached to.
+	NodeName string `json:"nodeName" protobuf:"bytes,3,opt,name=nodeName"`
 }
 
 // VolumeAttachmentSource represents a volume that should be attached.
@@ -196,50 +203,54 @@ type VolumeAttachmentSpec struct {
 // in future we may allow also inline volumes in pods.
 // Exactly one member can be set.
 type AttachedVolumeSource struct {
-    // Name of the persistent volume to attach.
-    // +optional
-    PersistentVolumeName *string `json:"persistentVolumeName,omitempty" protobuf:"bytes,1,opt,name=persistentVolumeName"`
+	// Name of the persistent volume to attach.
+	// +optional
+	PersistentVolumeName *string `json:"persistentVolumeName,omitempty" protobuf:"bytes,1,opt,name=persistentVolumeName"`
 
-    // Placeholder for *VolumeSource to accommodate inline volumes in pods.
+	// Placeholder for *VolumeSource to accommodate inline volumes in pods.
 }
 
+// The status of a VolumeAttachment request.
 type VolumeAttachmentStatus struct {
-  // Attached indicates the volume is successfully attached.
-  // This field must only be set by the entity completing the attach
-  // operation, i.e. the external-attacher.
-  Attached bool `json:"attached" protobuf:"varint,1,opt,name=attached"`
+	// Indicates the volume is successfully attached.
+	// This field must only be set by the entity completing the attach
+	// operation, i.e. the external-attacher.
+	Attached bool `json:"attached" protobuf:"varint,1,opt,name=attached"`
 
-  // Upon successful attach, this field is updated with any returned
-  // information that must be passed into subsequent WaitForAttach or
-  // mount calls.
-  // This field must only be set by the entity completing the attach
-  // operation, i.e. the external-attacher.
-  AttachmentMetadata map[string]string `json:"attachmentMetadata,omitempty" protobuf:"bytes,2,rep,name=attachmentMetadata"`
+	// Upon successful attach, this field is populated with any
+	// information returned by the attach operation that must be passed
+	// into subsequent WaitForAttach or Mount calls.
+	// This field must only be set by the entity completing the attach
+	// operation, i.e. the external-attacher.
+	// +optional
+	AttachmentMetadata map[string]string `json:"attachmentMetadata,omitempty" protobuf:"bytes,2,rep,name=attachmentMetadata"`
 
-  // Last error encountered during attach operation, if any.
-  // +optional
-  // This field must only be set by the entity completing the attach
-  // operation, i.e. the external-attacher.
-  AttachError *VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
+	// The last error encountered during attach operation, if any.
+	// This field must only be set by the entity completing the attach
+	// operation, i.e. the external-attacher.
+	// +optional
+	AttachError *VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
 
-  // Last error encountered during detach operation, if any.
-  // +optional
-  // This field must only be set by the entity completing the detach
-  // operation, i.e. the external-attacher.
-  DetachError *VolumeError `json:"detachError,omitempty" protobuf:"bytes,3,opt,name=detachError,casttype=VolumeError"`
+	// The last error encountered during detach operation, if any.
+	// This field must only be set by the entity completing the detach
+	// operation, i.e. the external-attacher.
+	// +optional
+	DetachError *VolumeError `json:"detachError,omitempty" protobuf:"bytes,4,opt,name=detachError,casttype=VolumeError"`
 }
 
+// Captures an error encountered during a volume operation.
 type VolumeError struct {
-  // Time the error was encountered.
-  // +optional
-  Time metav1.Time `json:"time,omitempty" protobuf:"bytes,1,opt,name=time"`
+	// Time the error was encountered.
+	// +optional
+	Time metav1.Time `json:"time,omitempty" protobuf:"bytes,1,opt,name=time"`
 
-  // String capturing the error encountered during Attach operation.
-  // This string maybe logged, so it should not contain sensitive
-  // information.
-  // +optional
-  Message string `json:"message,omitempty" protobuf:"bytes,2,opt,name=message"`
+	// String detailing the error encountered during Attach or Detach operation.
+	// This string maybe logged, so it should not contain sensitive
+	// information.
+	// +optional
+	Message string `json:"message,omitempty" protobuf:"bytes,2,opt,name=message"`
 }
+
 ```
 
 ### Kubernetes In-Tree CSI Volume Plugin
