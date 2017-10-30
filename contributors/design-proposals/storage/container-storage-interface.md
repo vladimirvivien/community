@@ -87,7 +87,9 @@ Kubelet (responsible for mount and unmount) will communicate with an external �
 
 The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of both CSI volume drivers and device plugins independently.
 
-Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeId. It should then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation should be `nodeid.csi.volume.kubernetes.io/<CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
+Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeId. It should then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation should be `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
+
+Sanitized CSIDriverName is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver.
 
 The Kubernetes team will provide a helper container that can manage the unix domain socket registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
 
@@ -122,7 +124,7 @@ Once the following conditions are true, the external-attacher should call `Contr
 1. A new `VolumeAttachment` Kubernetes API objects is created by Kubernetes.
 2. The `VolumeAttachment.Spec.Attacher` value in that object corresponds to the name of the external attacher.
 3. The `VolumeAttachment.Status.Attached` value is not yet set to true.
-4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `nodeid.csi.volume.kubernetes.io/<CSIDriverName>` annotation corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
+4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>` annotation corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
 5. The `VolumeAttachment.Metadata.DeletionTimestamp` is not set.
 
 Before starting the `ControllerPublishVolume` operation, the external-attacher should add these finalizers to these Kubernetes API objects:
