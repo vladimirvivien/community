@@ -87,15 +87,15 @@ Kubelet (responsible for mount and unmount) will communicate with an external �
 
 The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of both CSI volume drivers and device plugins independently.
 
-Upon initialization of the external “CSI volume driver”, some external component should call `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeId. It should then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation should be `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
+Upon initialization of the external “CSI volume driver”, "Kubernetes CSI Helper" container will call CSI method `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeID. It will then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation will be `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
 
-Sanitized CSIDriverName is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver.
+Sanitized CSIDriverName is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver. Exact sanitization method is implementation detail (SHA in the worst case).
 
 The Kubernetes team will provide a helper container that can manage the unix domain socket registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
 
 #### Master to CSI Driver Communication
 
-Because CSI volume driver code is considered untrusted, it should not be run on the master. Therefore, the Kube controller manager (responsible for create, delete, attach, and detach) can not communicate via a Unix Domain Socket with the “CSI volume driver” container. Instead, the Kube controller manager will communicate with the external “CSI volume driver” through the Kubernetes API.
+Because CSI volume driver code is considered untrusted, it might not be allowed to run on the master. Therefore, the Kube controller manager (responsible for create, delete, attach, and detach) can not communicate via a Unix Domain Socket with the “CSI volume driver” container. Instead, the Kube controller manager will communicate with the external “CSI volume driver” through the Kubernetes API.
 
 More specifically, some external component must watch the Kubernetes API on behalf of the external CSI volume driver and trigger the appropriate operations against it. This eliminates the problems of discovery and securing a channel between the kube-controller-manager and the CSI volume driver.
 
@@ -109,7 +109,7 @@ Provisioning and deletion operations are handled using the existing [external pr
 
 In short, to dynamically provision a new CSI volume, a cluster admin would create a `StorageClass` with the provisioner corresponding to the name of the external provisioner handling provisioning requests on behalf of the CSI volume driver.
 
-To provision a new CSI volume, an end user would create a `PersistentVolumeClaim` object referencing this `StorageClass`. The external provisioner will react to the creation of the PVC and issue the `CreateVolume` call against the CSI volume driver to provision the volume. The `CreateVolume` name will be auto-generated as it is for other dynamically provisioned volumes. The `CreateVolume` capacity will be take from the `PersistentVolumeClaim` object. The `CreateVolume` parameters will be passed through from the `StorageClass` parameters (opaque to Kubernetes). Once the operation completes successfully, the external provisioner creates a `PersistentVolume` object to represent the volume using the information returned in the `CreateVolume` call. The `PersistentVolume` object is bound to the `PersistentVolumeClaim` and available for use.
+To provision a new CSI volume, an end user would create a `PersistentVolumeClaim` object referencing this `StorageClass`. The external provisioner will react to the creation of the PVC and issue the `CreateVolume` call against the CSI volume driver to provision the volume. The `CreateVolume` name will be auto-generated as it is for other dynamically provisioned volumes. The `CreateVolume` capacity will be take from the `PersistentVolumeClaim` object. The `CreateVolume` parameters will be passed through from the `StorageClass` parameters (opaque to Kubernetes). Once the operation completes successfully, the external provisioner creates a `PersistentVolume` object to represent the volume using the information returned in the `CreateVolume` response. The `PersistentVolume` object is bound to the `PersistentVolumeClaim` and available for use.
 
 To delete a CSI volume, an end user would delete the corresponding `PersistentVolumeClaim` object. The external provisioner will react to the deletion of the PVC and based on its reclamation policy it will issue the `DeleteVolume` call against the CSI volume driver commands to delete the volume. It will then delete the `PersistentVolume` object.
 
@@ -121,7 +121,7 @@ More specifically, an external “attacher” must watch the Kubernetes API on b
 
 Once the following conditions are true, the external-attacher should call `ControllerPublishVolume` against the CSI volume driver to attach the volume to the specified node:
 
-1. A new `VolumeAttachment` Kubernetes API objects is created by Kubernetes.
+1. A new `VolumeAttachment` Kubernetes API objects is created by Kubernetes attach/detach controller.
 2. The `VolumeAttachment.Spec.Attacher` value in that object corresponds to the name of the external attacher.
 3. The `VolumeAttachment.Status.Attached` value is not yet set to true.
 4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>` annotation corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
@@ -149,7 +149,7 @@ The external-attacher may implement it’s own error recovery strategy, and retr
 The detach operation will be triggered by the deletion of the `VolumeAttachment` Kubernetes API objects. Since the `VolumeAttachment` Kubernetes API object will have a finalizer added by the external-attacher, it will wait for confirmation from the external-attacher before deleting the object.
 
 Once all the following conditions are true, the external-attacher should call `ControllerUnpublishVolume` against the CSI volume driver to detach the volume from the specified node:
-1. A `VolumeAttachment` Kubernetes API object is deleted by Kubernetes: the value for the `VolumeAttachment.metadata.deletionTimestamp` field is set.
+1. A `VolumeAttachment` Kubernetes API object is marked for deletion: the value for the `VolumeAttachment.metadata.deletionTimestamp` field is set.
 
 If the operation completes successfully, the external-attacher will:
 1. Remove its finalizer from the list of finalizers on the `VolumeAttachment` object permitting the delete operation to continue.
@@ -190,13 +190,14 @@ type VolumeAttachment struct {
 // The specification of a VolumeAttachment request.
 type VolumeAttachmentSpec struct {
 	// Attacher indicates the name of the volume driver that MUST handle this
-	// request. This is the name returned by GetPluginName().
+	// request. This is the name returned by GetPluginName() and must be the
+	// same as StorageClass.Provisioner.
 	Attacher string `json:"attacher" protobuf:"bytes,1,opt,name=attacher"`
 
 	// AttachedVolumeSource represents the volume that should be attached.
 	AttachedVolumeSource `json:",inline" protobuf:"bytes,2,opt,name=attachedVolumeSource"`
 
-	// The node that the volume should be attached to.
+	// Kubernetes node name that the volume should be attached to.
 	NodeName string `json:"nodeName" protobuf:"bytes,3,opt,name=nodeName"`
 }
 
@@ -227,13 +228,13 @@ type VolumeAttachmentStatus struct {
 	// +optional
 	AttachmentMetadata map[string]string `json:"attachmentMetadata,omitempty" protobuf:"bytes,2,rep,name=attachmentMetadata"`
 
-	// The last error encountered during attach operation, if any.
+	// The most recent error encountered during attach operation, if any.
 	// This field must only be set by the entity completing the attach
 	// operation, i.e. the external-attacher.
 	// +optional
-	AttachError *VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
+    AttachError *VolumeError `json:"attachError,omitempty" protobuf:"bytes,3,opt,name=attachError,casttype=VolumeError"`
 
-	// The last error encountered during detach operation, if any.
+	// The most recent error encountered during detach operation, if any.
 	// This field must only be set by the entity completing the detach
 	// operation, i.e. the external-attacher.
 	// +optional
@@ -344,8 +345,8 @@ Although, Kubernetes does not dictate the packaging for a CSI volume driver, it 
 To deploy a containerized third-party CSI volume driver, it is recommended that storage vendors:
 
   * Create a “CSI volume driver” container that implements the volume plugin behavior and exposes a gRPC interface via a unix domain socket, as defined in the CSI spec (including Controller, Node, and Identity services).
-  * To deploy a CSI plugin, a cluster admin should deploy the following
   * The Kubernetes team will provide helper containers (external-attacher, external-provisioner, Kubernetes CSI Helper) which will assist the “CSI volume driver” container in interacting with the Kubernetes system.
+  * To deploy a CSI plugin, a cluster admin should deploy the following
     * StatefulSet with replica size 1, that should
       * A StatefulSet (unlike a ReplicaSet) will guarantee that no more than 1 instance of the pod will be running at once (so we don’t have to worry about multiple instances of the external-provisioner or external-attacher in the cluster).
       * Contain the following containers
