@@ -69,7 +69,7 @@ The `SetUp`/`TearDown` calls for the new in-tree CSI volume plugin will directly
 
 Provision/delete and attach/detach must be handled by some external component that monitors the Kubernetes API on behalf of a CSI volume driver and invokes the appropriate CSI RPCs against it.
 
-To simplify integration, the Kubernetes team will offer a container that captures all the Kubernetes specific logic and acts as a bridge between third-party containerized CSI volume driver and Kubernetes (each deployment of a volume plugin would have it’s own “bridge”).
+To simplify integration, the Kubernetes team will offer a containers that captures all the Kubernetes specific logic and act as adapters between third-party containerized CSI volume drivers and Kubernetes (each deployment of a CSI driver would have it’s own instance of the adapter).
 
 ## Design Details
 
@@ -77,7 +77,7 @@ To simplify integration, the Kubernetes team will offer a container that capture
 
 Kubernetes is as minimally prescriptive on the packaging and deployment of a CSI Volume Driver as possible. Use of the *Communication Channels* (documented below) is the only requirement for enabling an arbitrary external CSI compatible storage driver in Kubernetes.
 
-This document recommends a standard mechanism for deploying an arbitrary containerized CSI driver on Kubernetes to simplify deployments of containerized CSI compatible volume drivers on Kubernetes (see the “Recommended Mechanism for Deploying CSI Drivers on Kubernetes” section below), however, this is strictly optional.
+This document recommends a standard mechanism for deploying an arbitrary containerized CSI driver on Kubernetes. This can be used by a Storage Provider to simplify deployment of containerized CSI compatible volume drivers on Kubernetes (see the “Recommended Mechanism for Deploying CSI Drivers on Kubernetes” section below). This mechanism, however, is strictly optional.
 
 ### Communication Channels
 
@@ -85,13 +85,20 @@ This document recommends a standard mechanism for deploying an arbitrary contain
 
 Kubelet (responsible for mount and unmount) will communicate with an external “CSI volume driver” running on the same host machine (whether containerized or not) via a Unix Domain Socket.
 
-The Unix Domain Socket will be registered with kubelet using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism. This mechanism will need to be extended to support registration of both CSI volume drivers and device plugins independently.
+CSI volume drivers should create a socket at the following path on the node machine: `/var/lib/kubelet/plugins/csi/sockets/[driverName]/kubeletproxy.sock`. For alpha, kubelet will assume this is the location for the Unix Domain Socket to talk to the CSI volume driver. For the beta implementation, we can consider using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism to register the Unix Domain Socket with kubelet. This mechanism would need to be extended to support registration of both CSI volume drivers and device plugins independently.
 
-Upon initialization of the external “CSI volume driver”, "Kubernetes CSI Helper" container will call CSI method `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeID. It will then add the CSI driver NodeID as an annotation to the Kubernetes Node API object. The key of the annotation will be `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>`. This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
+Upon initialization of the external “CSI volume driver”, some external component must call the CSI method `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeID. It must then add the CSI driver NodeID to the `csi.volume.kubernetes.io/nodeid` annotation on the Kubernetes Node API object. The key of the annotation must be `csi.volume.kubernetes.io/nodeid`. The value of the annotation is a JSON blob, containing key/value pairs for each CSI driver.
 
-Sanitized CSIDriverName is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver. Exact sanitization method is implementation detail (SHA in the worst case).
+For example:
+```
+csi.volume.kubernetes.io/nodeid: "{ \"driver1\": \"name1\", \"driver2\": \"name2\" }
+```
 
-The Kubernetes team will provide a helper container that can manage the unix domain socket registration and NodeId initialization (see “Recommended Mechanism for Deployment” below for details).
+This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
+
+`Sanitized CSIDriverName` is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver. Exact sanitization method is implementation detail (SHA in the worst case).
+
+To enable easy deployment of an external containerized CSI volume driver, the Kubernetes team will provide a sidecar "Kubernetes CSI Helper" container that can manage the unix domain socket registration and NodeId initialization. This is detailed in the “Suggested Mechanism for Deploying CSI Drivers on Kubernetes” section below.
 
 #### Master to CSI Driver Communication
 
@@ -264,7 +271,7 @@ The existing Kubernetes volume components (attach/detach controller, PVC/PV cont
 
 #### Proposed API
 
-A new `CSIPersistentVolumeSource` object will be added to the Kubernetes API. It will be part of the existing `PersistentVolumeSource` objects and thus can be used only via PersistentVolumes. For now we do not consider allowing CSI volumes directly from Pods without PersistentVolumeClaim.
+A new `CSIPersistentVolumeSource` object will be added to the Kubernetes API. It will be part of the existing `PersistentVolumeSource` object and thus can be used only via PersistentVolumes. CSI volumes will not be allow referencing directly from Pods without a `PersistentVolumeClaim`.
 
 ```GO
 type CSIPersistentVolumeSource struct {
@@ -345,24 +352,24 @@ Although, Kubernetes does not dictate the packaging for a CSI volume driver, it 
 To deploy a containerized third-party CSI volume driver, it is recommended that storage vendors:
 
   * Create a “CSI volume driver” container that implements the volume plugin behavior and exposes a gRPC interface via a unix domain socket, as defined in the CSI spec (including Controller, Node, and Identity services).
-  * The Kubernetes team will provide helper containers (external-attacher, external-provisioner, Kubernetes CSI Helper) which will assist the “CSI volume driver” container in interacting with the Kubernetes system.
-  * To deploy a CSI plugin, a cluster admin should deploy the following
-    * StatefulSet with replica size 1, that should
-      * A StatefulSet (unlike a ReplicaSet) will guarantee that no more than 1 instance of the pod will be running at once (so we don’t have to worry about multiple instances of the external-provisioner or external-attacher in the cluster).
-      * Contain the following containers
+  * Bundle the “CSI volume driver” container with helper containers (external-attacher, external-provisioner, Kubernetes CSI Helper) that the Kubernetes team will provide (these helper containers will assist the “CSI volume driver” container in interacting with the Kubernetes system). More specifically, create the following Kubernetes objects:
+    * A `StatefulSet` (to facilitate communication with the Kubernetes controllers) that has:
+      * Replica size 1
+        * Guarantees that no more than 1 instance of the pod will be running at once (so we don’t have to worry about multiple instances of the `external-provisioner` or `external-attacher` in the cluster).
+      * The following containers
         * The “CSI volume driver” container created by the storage vendor.
-        * The external-attacher container provided by the Kubernetes team.
-        * The external-provisioner container provided by the Kubernetes team.
-      * Have the following volumes:
+        * The `external-attacher` container provided by the Kubernetes team.
+        * The `external-provisioner` container provided by the Kubernetes team.
+      * The following volumes:
         * `emptyDir` volume
-          * Mount inside all containers at `/var/lib/csi/sockets/pluginproxy/`
-          * The “CSI volume driver” container should create its Unix Domain Socket in this directory to enable communication with the Kubernetes helper container(s) (external-provisioner, external-attacher).
-    * DaemonSet
-      * A DaemonSet will ensure that 1 instance of the pod is deployed on every node (to facilitate communication from every instance of kubelet).
-      * Contain the following containers
+          * Mounted inside all containers at `/var/lib/csi/sockets/pluginproxy/`
+          * The “CSI volume driver” container should create its Unix Domain Socket in this directory to enable communication with the Kubernetes helper container(s) (`external-provisioner`, `external-attacher`).
+    * A `DaemonSet` (to facilitate communication with every instance of kubelet) that has:
+      * The following containers
         * The “CSI volume driver” container created by the storage vendor.
-        * The “Kubernetes CSI Helper” container provided by the Kubernetes team responsible for registering the unix domain socket with kubelet and NodeId initialization.
-      * Have the following volumes:
+        * The “Kubernetes CSI Helper” container provided by the Kubernetes team
+          * Responsible for registering the unix domain socket with kubelet and initializing NodeId.
+      * The following volumes:
         * `hostpath` volume
           * Expose `/var/lib/kubelet/device-plugins/kubelet.sock` from the host.
           * Mount only in “Kubernetes CSI Helper” container at `/var/lib/csi/sockets/kubelet.sock`
@@ -372,11 +379,12 @@ To deploy a containerized third-party CSI volume driver, it is recommended that 
           * Mount only in “CSI volume driver” container at `/var/lib/kubelet/`
           * Ensure [bi-directional mount propagation](https://kubernetes.io/docs/concepts/storage/volumes/#mount-propagation) is enabled, so that any mounts setup inside this container are propagated back to the host machine.
         * `hostpath` volume
-          * Expose `/var/lib/kubelet/plugins/csi/sockets/kubeletproxy.sock` from the host.
+          * Expose `/var/lib/kubelet/plugins/csi/sockets/[driverName]/kubeletproxy.sock` from the host as `hostPath.type = "DirectoryOrCreate"`.
           * Mount only in “CSI volume driver” container at `/var/lib/csi/sockets/kubeletproxy.sock`
           * This is the primary means of communication between Kubelet and the “CSI volume driver” container (gRPC over UDS).
+  * Have cluster admins deploy the above `StatefulSet` and `DaemonSet` to aded support for the storage system in their Kubernetes cluster.
 
-Alternatively, one could simplify deployment by deploying all components (including external-provisioner and external-attacher) in the same pod (DaemonSet). However, this would consume more resources, and require a leader election protocol (likely https://github.com/kubernetes/contrib/tree/master/election) in the external-provisioner and external-attacher components.
+Alternatively, deployment could be simplified by having all components (including external-provisioner and external-attacher) in the same pod (DaemonSet). Doing so, however, would consume more resources, and require a leader election protocol (likely https://github.com/kubernetes/contrib/tree/master/election) in the `external-provisioner` and `external-attacher` components.
 
 ### Example Walkthrough
 
@@ -459,3 +467,7 @@ type CSIPersistentVolumeSource struct {
     AttachSecretRef *SecretReference `json:"attachSecretRef,omitempty" protobuf:"bytes,4,opt,name=attachSecretRef"`
 }
 ```
+
+Note that a malicious provisioner could obtain an arbitrary secret by setting the mount secret in PV object to whatever secret it wants. It is assumed that cluster admins will only run trusted provisioners.
+
+Because the kubelet would be responsible for fetching and passing the mount secret to the CSI driver,the Kubernetes NodeAuthorizer must be updated to allow kubelet read access to mount secrets.
