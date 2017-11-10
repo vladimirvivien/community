@@ -471,3 +471,70 @@ type CSIPersistentVolumeSource struct {
 Note that a malicious provisioner could obtain an arbitrary secret by setting the mount secret in PV object to whatever secret it wants. It is assumed that cluster admins will only run trusted provisioners.
 
 Because the kubelet would be responsible for fetching and passing the mount secret to the CSI driver,the Kubernetes NodeAuthorizer must be updated to allow kubelet read access to mount secrets.
+
+## Alternatives considered
+
+### Attachment of PersistentVolume is stored directly in PersistentVolumes
+* No `VolumeAttachment` object
+* PV gets field(s) that track its attachment to Nodes.
+
+```go
+type PersistentVolumeSpec struct {
+  //...
+
+
+  // List of requested attachments.
+  Attachments []PersistentVolumeAttachmentSpec
+}
+
+// Requested attachment.
+type PersistentVolumeAttachmentSpec struct {
+  // Name of node where this volume should be attached.
+  NodeName string
+}
+
+type PersistentVolumeStatus struct {
+  //...
+
+  // Status of attachments.
+  Attachments []PersistentVolumeAttachmentStatus
+}
+
+// Status of attachment.
+type PersistentVolumeAttachmentStatus struct {
+  // Name of node where this attachment status corresponds to.
+  NodeName string
+
+  // Current state of attachment.
+
+  Attached bool // or enum
+  // Upon successful attach, this field is populated with any
+  // information returned by the attach operation that must be passed
+  // into subsequent WaitForAttach or Mount calls.
+  // This field must only be set by the entity completing the attach
+  // operation, i.e. the external-attacher.
+  AttachmentMetadata map[string]string
+
+  // The last error encountered during attach/detach operation, if any.
+  AttachError *VolumeError
+}
+
+// Captures an error encountered during a volume operation.
+type VolumeError struct {
+	// Time the error was encountered.
+	Time metav1.Time
+
+	// String detailing the error encountered during Attach or Detach operation.
+	// This string maybe logged, so it should not contain sensitive
+	// information.
+	Message string
+}
+```
+
+* This approach **cannot be easily extended to inline volumes in Pods**.
+   * Where will we keep their attachment status? It must not be Pod, Pod can be deleted while attacher is down and it would loose track of volumes to detach. Current practice is that kubelet unmounts Pod's volumes **after** its deleted from API server and A/D controller detaches them after they're unmounted. "Terminating" state is not enough for unmount / detach.
+       * We could change this practice and have a finalizer on Pods that would keep it around for external attacher. This will change current behavior though.
+       * Note that having a Pod object around until its volumes are fully unmounted and detached would save kubelet and A/D controller from lot of pain and bugs!
+   * **Even if we extended Pods to contain their volume attachments, we would keep track of volume attachments on two places.**
+   * **If we extended Pods to contain their volume attachments, external attacher would need read access to Pods and write access to Pod.Status of all pods.** That sounds scary. Now the external attacher needs to read/write VolumeAttachments and PVs. Where write access to PVs is just for Finalizers.
+* On the possitive side, it is realively easy to track volumes that should be attached (are in `Spec.Attachments`) and detached (are in `Status.Attachments` and not in `Spec.Attachments`) and implementation would not be that bad.
